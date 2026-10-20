@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>모래 미끄럼 퍼즐 - Sand Physics Game</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            touch-action: none;
+        }
+        body {
+            background: #11141a;
+            color: #ffffff;
+            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 420px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        header {
+            width: 100%;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 16px 16px 0 0;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-bottom: none;
+        }
+        .score-box {
+            font-size: 18px;
+            font-weight: 700;
+            color: #4da6ff;
+        }
+        .high-score {
+            font-size: 13px;
+            color: #888;
+        }
+        canvas {
+            background: #090b0e;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+            cursor: crosshair;
+            display: block;
+        }
+        .controls-bar {
+            width: 100%;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 0 0 16px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-top: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+        .ink-bar-container {
+            flex: 1;
+            height: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            overflow: hidden;
+            position: relative;
+        }
+        .ink-bar {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, #ff4d4d, #ffd700, #4da6ff);
+            transition: width 0.1s linear;
+        }
+        button {
+            background: #ff4d4d;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(255, 77, 77, 0.3);
+            transition: transform 0.1s, background 0.2s;
+        }
+        button:active {
+            transform: scale(0.95);
+        }
+        .instruction {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <header>
+            <div class="score-box">
+                점수 <span id="score">0</span>
+            </div>
+            <div class="high-score">
+                최고 점수 <span id="high-score">0</span>
+            </div>
+        </header>
+
+        <canvas id="gameCanvas" width="380" height="560"></canvas>
+
+        <div class="controls-bar">
+            <div class="ink-bar-container">
+                <div id="inkBar" class="ink-bar"></div>
+            </div>
+            <button id="clearBtn">선 지우기</button>
+        </div>
+
+        <div class="instruction">손가락/마우스로 선을 그려 모래를 밀어 넣으세요! (같은 색 5개 연결시 폭발)</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const highScoreEl = document.getElementById('high-score');
+        const inkBar = document.getElementById('inkBar');
+        const clearBtn = document.getElementById('clearBtn');
+
+        // 사운드 효과 (Web Audio API)
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playPopSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(400 + Math.random() * 300, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.1);
+        }
+
+        let score = 0;
+        let highScore = localStorage.getItem('sand_high_score') || 0;
+        highScoreEl.textContent = highScore;
+
+        let sands = [];
+        let walls = [];
+        let particles = [];
+        let isDrawing = false;
+        let lastPoint = null;
+
+        let maxInk = 1000;
+        let currentInk = maxInk;
+
+        const COLORS = ['#FF4D4D', '#4DA6FF', '#FFD700']; // 빨강, 파랑, 노랑
+        const SAND_RADIUS = 8;
+        const GRAVITY = 0.22;
+        const FRICTION = 0.97;
+
+        // 동그라미 모래 클래스
+        class Sand {
+            constructor(x, y, colorIndex) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 1.5;
+                this.vy = Math.random() * 1.5;
+                this.radius = SAND_RADIUS;
+                this.colorIndex = colorIndex;
+                this.color = COLORS[colorIndex];
+            }
+
+            update() {
+                this.vy += GRAVITY;
+                this.vx *= FRICTION;
+                this.vy *= FRICTION;
+
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // 좌우 벽 충돌
+                if (this.x - this.radius < 0) {
+                    this.x = this.radius;
+                    this.vx *= -0.5;
+                }
+                if (this.x + this.radius > canvas.width) {
+                    this.x = canvas.width - this.radius;
+                    this.vx *= -0.5;
+                }
+
+                // 바닥 충돌
+                if (this.y + this.radius > canvas.height) {
+                    this.y = canvas.height - this.radius;
+                    this.vy *= -0.2;
+                    this.vx *= 0.8;
+                }
+
+                // 사용자가 그린 장벽 선 충돌
+                for (let wall of walls) {
+                    this.checkWallCollision(wall);
+                }
+            }
+
+            checkWallCollision(wall) {
+                const dx = wall.x2 - wall.x1;
+                const dy = wall.y2 - wall.y1;
+                const lenSq = dx * dx + dy * dy;
+                if (lenSq === 0) return;
+
+                let t = ((this.x - wall.x1) * dx + (this.y - wall.y1) * dy) / lenSq;
+                t = Math.max(0, Math.min(1, t));
+
+                const projX = wall.x1 + t * dx;
+                const projY = wall.y1 + t * dy;
+
+                const distX = this.x - projX;
+                const distY = this.y - projY;
+                const distance = Math.sqrt(distX * distX + distY * distY);
+
+                if (distance < this.radius + 3) {
+                    const nx = distX / (distance || 1);
+                    const ny = distY / (distance || 1);
+
+                    this.x = projX + nx * (this.radius + 3);
+                    this.y = projY + ny * (this.radius + 3);
+
+                    const dot = this.vx * nx + this.vy * ny;
+                    this.vx = (this.vx - 1.8 * dot * nx) * 0.75;
+                    this.vy = (this.vy - 1.8 * dot * ny) * 0.75 + 0.3;
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+
+                // 모래에 입체감(하이라이트) 추가
+                ctx.beginPath();
+                ctx.arc(this.x - this.radius * 0.3, this.y - this.radius * 0.3, this.radius * 0.3, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+                ctx.fill();
+                ctx.closePath();
+            }
+        }
+
+        // 터질 때 퍼지는 불꽃 입자 효과
+        class PopParticle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 6;
+                this.vy = (Math.random() - 0.5) * 6;
+                this.radius = Math.random() * 4 + 2;
+                this.color = color;
+                this.alpha = 1;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.alpha -= 0.04;
+            }
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = Math.max(0, this.alpha);
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        // 모래 입자끼리 서로 겹치지 않게 튕겨내는 완벽한 물리 충돌
+        function resolveSandCollisions() {
+            for (let i = 0; i < sands.length; i++) {
+                for (let j = i + 1; j < sands.length; j++) {
+                    let s1 = sands[i];
+                    let s2 = sands[j];
+                    let dx = s2.x - s1.x;
+                    let dy = s2.y - s1.y;
+                    let dist = Math.hypot(dx, dy);
+                    let minDist = s1.radius + s2.radius;
+
+                    if (dist < minDist && dist > 0) {
+                        let overlap = minDist - dist;
+                        let nx = dx / dist;
+                        let ny = dy / dist;
+
+                        // 위치 강제 이격
+                        s1.x -= nx * overlap * 0.5;
+                        s1.y -= ny * overlap * 0.5;
+                        s2.x += nx * overlap * 0.5;
+                        s2.y += ny * overlap * 0.5;
+
+                        // 충돌 튕김 속도 계산
+                        let kx = s1.vx - s2.vx;
+                        let ky = s1.vy - s2.vy;
+                        let p = (nx * kx + ny * ky);
+
+                        if (p > 0) {
+                            s1.vx -= p * nx * 0.7;
+                            s1.vy -= p * ny * 0.7;
+                            s2.vx += p * nx * 0.7;
+                            s2.vy += p * ny * 0.7;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 선 그리기 좌표 수집
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
+        function startDrawing(e) {
+            isDrawing = true;
+            lastPoint = getPos(e);
+        }
+
+        function drawLine(e) {
+            if (!isDrawing || currentInk <= 0) return;
+            const currentPoint = getPos(e);
+            const dist = Math.hypot(currentPoint.x - lastPoint.x, currentPoint.y - lastPoint.y);
+
+            if (dist > 3) {
+                walls.push({ x1: lastPoint.x, y1: lastPoint.y, x2: currentPoint.x, y2: currentPoint.y });
+                currentInk = Math.max(0, currentInk - dist);
+                inkBar.style.width = `${(currentInk / maxInk) * 100}%`;
+                lastPoint = currentPoint;
+            }
+        }
+
+        function stopDrawing() {
+            isDrawing = false;
+        }
+
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', drawLine);
+        window.addEventListener('mouseup', stopDrawing);
+
+        canvas.addEventListener('touchstart', (e) => { startDrawing(e); e.preventDefault(); });
+        canvas.addEventListener('touchmove', (e) => { drawLine(e); e.preventDefault(); });
+        window.addEventListener('touchend', stopDrawing);
+
+        // 선 지우기 버튼
+        clearBtn.addEventListener('click', () => {
+            walls = [];
+            currentInk = maxInk;
+            inkBar.style.width = '100%';
+        });
+
+        // 일정 간격 모래 낙하
+        setInterval(() => {
+            if (sands.length < 160) {
+                const x = Math.random() * (canvas.width - 80) + 40;
+                const colorIdx = Math.floor(Math.random() * 3);
+                sands.push(new Sand(x, -10, colorIdx));
+            }
+        }, 350);
+
+        // 같은 색 모래 5개 이상 이어졌을 때 폭발 감지
+        setInterval(() => {
+            let toRemove = new Set();
+
+            for (let i = 0; i < sands.length; i++) {
+                let chain = [sands[i]];
+                for (let j = i + 1; j < sands.length; j++) {
+                    if (sands[i].colorIndex === sands[j].colorIndex) {
+                        const dist = Math.hypot(sands[i].x - sands[j].x, sands[i].y - sands[j].y);
+                        if (dist < SAND_RADIUS * 2.6) {
+                            chain.push(sands[j]);
+                        }
+                    }
+                }
+                if (chain.length >= 5) {
+                    chain.forEach(s => toRemove.add(s));
+                }
+            }
+
+            if (toRemove.size > 0) {
+                playPopSound();
+                toRemove.forEach(s => {
+                    for (let p = 0; p < 4; p++) {
+                        particles.push(new PopParticle(s.x, s.y, s.color));
+                    }
+                });
+
+                sands = sands.filter(s => !toRemove.has(s));
+                score += toRemove.size * 15;
+                scoreEl.textContent = score;
+
+                if (score > highScore) {
+                    highScore = score;
+                    highScoreEl.textContent = highScore;
+                    localStorage.setItem('sand_high_score', highScore);
+                }
+            }
+        }, 400);
+
+        // 메인 프레임 루프
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 사용자가 그린 선 장벽 그리기
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = 'rgba(255, 255, 255, 0.5)';
+            for (let wall of walls) {
+                ctx.beginPath();
+                ctx.moveTo(wall.x1, wall.y1);
+                ctx.lineTo(wall.x2, wall.y2);
+                ctx.stroke();
+            }
+            ctx.shadowBlur = 0;
+
+            // 모래 입자 간 튕김 물리 연산
+            resolveSandCollisions();
+
+            // 모래 업데이트 및 그리기
+            for (let sand of sands) {
+                sand.update();
+                sand.draw();
+            }
+
+            // 폭발 파티클 효과
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+                if (particles[i].alpha <= 0) particles.splice(i, 1);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
