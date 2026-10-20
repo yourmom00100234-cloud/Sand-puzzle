@@ -23,8 +23,8 @@
             align-items: center;
             justify-content: space-between;
             height: 100vh;
-            height: 100dvh; /* 모바일 주소창 대응 */
-            padding-bottom: 60px; /* 하단 광고 영역 공간 확보 */
+            height: 100dvh;
+            padding-bottom: 60px;
         }
         #ui-container {
             display: flex;
@@ -99,7 +99,6 @@
         <canvas id="canvas"></canvas>
     </div>
 
-    <!-- 하단 광고 영역 및 잉크바 배치 공간 -->
     <div id="bottom-panel">
         <div id="ink-bar-container">
             <div id="ink-bar"></div>
@@ -115,7 +114,6 @@
         const comboEl = document.getElementById('combo');
         const inkBarEl = document.getElementById('ink-bar');
 
-        // 화면 크기에 맞게 캔버스 크기 자동 조절 (하단 광고 공간 제외)
         function resizeCanvas() {
             canvas.width = container.clientWidth;
             canvas.height = container.clientHeight;
@@ -145,37 +143,40 @@
                 this.y = y;
                 this.radius = 5;
                 this.colorObj = colorObj;
-                this.vx = (Math.random() - 0.5) * 1;
-                this.vy = Math.random() * 2 + 1;
+                this.vx = 0;
+                this.vy = 2;
             }
 
             update() {
-                this.vy += 0.15;
+                this.vy += 0.2; // 중력
                 this.x += this.vx;
                 this.y += this.vy;
 
+                // 바닥 충돌
                 if (this.y + this.radius > canvas.height) {
                     this.y = canvas.height - this.radius;
                     this.vy = 0;
-                    this.vx *= 0.5;
+                    this.vx = 0;
                 }
 
+                // 벽 충돌
                 if (this.x - this.radius < 0) {
                     this.x = this.radius;
-                    this.vx *= -0.5;
+                    this.vx = 0;
                 } else if (this.x + this.radius > canvas.width) {
                     this.x = canvas.width - this.radius;
-                    this.vx *= -0.5;
+                    this.vx = 0;
                 }
 
+                // 선 충돌
                 for (let line of lines) {
                     for (let i = 0; i < line.length - 1; i++) {
                         const p1 = line[i];
                         const p2 = line[i + 1];
                         const dist = pointToSegmentDistance(this.x, this.y, p1.x, p1.y, p2.x, p2.y);
-                        if (dist < this.radius + 3) {
-                            this.vy = -this.vy * 0.2;
-                            this.vx += (Math.random() - 0.5) * 0.5;
+                        if (dist < this.radius + 2) {
+                            this.vy = -this.vy * 0.1;
+                            this.vx += (Math.random() - 0.5) * 1.5;
                             this.y -= 2;
                         }
                     }
@@ -227,17 +228,50 @@
             return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
         }
 
+        // 모래 생성 빈도 낮춤 (과도한 생성 방지 및 최대 150개 제한)
         function spawnSand() {
-            if (Math.random() < 0.25) {
+            if (Math.random() < 0.12 && sands.length < 150) {
                 const randomX = Math.random() * (canvas.width - 40) + 20;
                 const randomColor = COLORS[Math.floor(Math.random() * COLORS.length)];
                 sands.push(new Sand(randomX, 10, randomColor));
             }
         }
 
+        // 모래끼리 겹치지 않도록 밀어내는 충돌 처리 함수
+        function resolveSandCollisions() {
+            const minDist = 10; // 모래 지름 (5 * 2)
+            for (let i = 0; i < sands.length; i++) {
+                for (let j = i + 1; j < sands.length; j++) {
+                    const s1 = sands[i];
+                    const s2 = sands[j];
+                    const dx = s2.x - s1.x;
+                    const dy = s2.y - s1.y;
+                    const dist = Math.hypot(dx, dy);
+
+                    if (dist < minDist && dist > 0) {
+                        const overlap = (minDist - dist) / 2;
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+
+                        // 서로 반대 방향으로 밀어내기
+                        s1.x -= nx * overlap;
+                        s1.y -= ny * overlap;
+                        s2.x += nx * overlap;
+                        s2.y += ny * overlap;
+
+                        // 아래에 쌓였을 때 옆으로 흘러내리게 처리
+                        if (Math.abs(dy) < minDist * 0.5) {
+                            s1.vx -= nx * 0.2;
+                            s2.vx += nx * 0.2;
+                        }
+                    }
+                }
+            }
+        }
+
         function checkGroups() {
             const visited = new Set();
-            const thresholdDistance = 16;
+            const thresholdDistance = 14;
 
             for (let i = 0; i < sands.length; i++) {
                 if (visited.has(i)) continue;
@@ -350,10 +384,12 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             spawnSand();
-            sands.forEach(sand => {
-                sand.update();
-                sand.draw();
-            });
+
+            // 모래 위치 업데이트 및 충돌 처리
+            sands.forEach(sand => sand.update());
+            resolveSandCollisions(); // 모래끼리 겹침 방지
+
+            sands.forEach(sand => sand.draw());
 
             checkGroups();
 
