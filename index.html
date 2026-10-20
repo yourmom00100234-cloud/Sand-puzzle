@@ -126,11 +126,11 @@
         let ink = 100;
         const maxInk = 100;
 
+        // 🎨 색상 딱 3개만 지정 (빨강, 파랑, 초록)
         const COLORS = [
             { id: 0, name: 'RED', hex: '#ff4757' },
             { id: 1, name: 'BLUE', hex: '#1e90ff' },
-            { id: 2, name: 'GREEN', hex: '#2ed573' },
-            { id: 3, name: 'YELLOW', hex: '#ffa502' }
+            { id: 2, name: 'GREEN', hex: '#2ed573' }
         ];
 
         let sands = [];
@@ -144,11 +144,14 @@
                 this.radius = 5;
                 this.colorObj = colorObj;
                 this.vx = 0;
-                this.vy = 2;
+                this.vy = 1.5;
+                this.isSettled = false;
             }
 
             update() {
-                this.vy += 0.2; // 중력
+                if (this.isSettled) return;
+
+                this.vy += 0.25; // 중력
                 this.x += this.vx;
                 this.y += this.vy;
 
@@ -157,6 +160,8 @@
                     this.y = canvas.height - this.radius;
                     this.vy = 0;
                     this.vx = 0;
+                    this.isSettled = true;
+                    return;
                 }
 
                 // 벽 충돌
@@ -168,16 +173,19 @@
                     this.vx = 0;
                 }
 
-                // 선 충돌
+                // 선과의 충돌 (거꾸로 튀어오르지 않고 선을 타고 미끄러지도록 수정)
                 for (let line of lines) {
                     for (let i = 0; i < line.length - 1; i++) {
                         const p1 = line[i];
                         const p2 = line[i + 1];
                         const dist = pointToSegmentDistance(this.x, this.y, p1.x, p1.y, p2.x, p2.y);
+                        
                         if (dist < this.radius + 2) {
-                            this.vy = -this.vy * 0.1;
-                            this.vx += (Math.random() - 0.5) * 1.5;
-                            this.y -= 2;
+                            // 선의 기울기 계산하여 옆으로 흘러내리게 유도
+                            const slope = (p2.y - p1.y) / (p2.x - p1.x || 0.001);
+                            this.vy = Math.max(0, this.vy * 0.1); // 위로 튀는 현상 방지
+                            this.vx = slope > 0 ? 1.2 : -1.2; // 경사면을 따라 미끄러짐
+                            this.y = Math.min(this.y, p1.y - this.radius); // 선 아래로 파고들기 방지
                         }
                     }
                 }
@@ -228,18 +236,18 @@
             return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
         }
 
-        // 모래 생성 빈도 낮춤 (과도한 생성 방지 및 최대 150개 제한)
+        // 모래 생성 빈도 최적화 (최대 120개 제한)
         function spawnSand() {
-            if (Math.random() < 0.12 && sands.length < 150) {
+            if (Math.random() < 0.1 && sands.length < 120) {
                 const randomX = Math.random() * (canvas.width - 40) + 20;
                 const randomColor = COLORS[Math.floor(Math.random() * COLORS.length)];
                 sands.push(new Sand(randomX, 10, randomColor));
             }
         }
 
-        // 모래끼리 겹치지 않도록 밀어내는 충돌 처리 함수
+        // 🟢 [핵심] 모래끼리 절대로 겹치지 않고 단단하게 밀어내는 충돌 처리
         function resolveSandCollisions() {
-            const minDist = 10; // 모래 지름 (5 * 2)
+            const minDist = 10; // 지름 (5 * 2)
             for (let i = 0; i < sands.length; i++) {
                 for (let j = i + 1; j < sands.length; j++) {
                     const s1 = sands[i];
@@ -253,16 +261,16 @@
                         const nx = dx / dist;
                         const ny = dy / dist;
 
-                        // 서로 반대 방향으로 밀어내기
+                        // 위치 강제 분리 (겹침 원천 차단)
                         s1.x -= nx * overlap;
                         s1.y -= ny * overlap;
                         s2.x += nx * overlap;
                         s2.y += ny * overlap;
 
-                        // 아래에 쌓였을 때 옆으로 흘러내리게 처리
-                        if (Math.abs(dy) < minDist * 0.5) {
-                            s1.vx -= nx * 0.2;
-                            s2.vx += nx * 0.2;
+                        // 아래에 쌓이면 고정 상태로 변경
+                        if (ny > 0.5) {
+                            s1.isSettled = true;
+                            s2.isSettled = true;
                         }
                     }
                 }
@@ -323,6 +331,9 @@
                 sands.splice(idx, 1);
             });
 
+            // 터진 후 주변 모래들 다시 떨어지게 깨우기
+            sands.forEach(s => s.isSettled = false);
+
             ink = Math.min(maxInk, ink + 15);
         }
 
@@ -338,7 +349,7 @@
         }
 
         function startDraw(pos) {
-            if (ink > 5 && pos.y >= 0 && pos.y <= canvas.height) {
+            if (ink > 5 && pos.y >= 0 && pos.y <= canvas.height - 60) {
                 isDrawing = true;
                 currentLine = [pos];
                 lines.push(currentLine);
@@ -385,9 +396,8 @@
 
             spawnSand();
 
-            // 모래 위치 업데이트 및 충돌 처리
             sands.forEach(sand => sand.update());
-            resolveSandCollisions(); // 모래끼리 겹침 방지
+            resolveSandCollisions(); // 겹침 방지 및 단단하게 쌓임
 
             sands.forEach(sand => sand.draw());
 
